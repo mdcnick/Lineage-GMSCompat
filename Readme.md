@@ -34,3 +34,6 @@ Everything provided here is for others to run builds the same as what is provide
     * Many things that are pre-requisite for gmscompat
     * See `gmscompat-patches.bash` for further info
 * Everything else standard from LineageOS
+## LineageOS 24.0 duress port
+
+The LE2127 duress PIN and password patch series has its own [integration and validation guide](ports/lineage-24.0/lemonadep-duress/README.md).

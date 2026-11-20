@@ -1,0 +1,288 @@
+From d5126863c5ca47b1d7860eb5170b555042ac8e76 Mon Sep 17 00:00:00 2001
+From: Nick <mdcnick@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 01:20:42 -0600
+Subject: [PATCH 2/2] Test duress verification and wipe dispatch with mock
+ actions
+
+---
+ .../DuressPasswordHelperTest.java             | 179 ++++++++++++++++++
+ .../LockSettingsServiceTests.java             |  73 +++++++
+ 2 files changed, 252 insertions(+)
+ create mode 100644 services/tests/servicestests/src/com/android/server/locksettings/DuressPasswordHelperTest.java
+
+diff --git a/services/tests/servicestests/src/com/android/server/locksettings/DuressPasswordHelperTest.java b/services/tests/servicestests/src/com/android/server/locksettings/DuressPasswordHelperTest.java
+new file mode 100644
+index 00000000..313f7afe
+--- /dev/null
++++ b/services/tests/servicestests/src/com/android/server/locksettings/DuressPasswordHelperTest.java
+@@ -0,0 +1,179 @@
++/*
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++package com.android.server.locksettings;
++
++import static android.os.UserHandle.USER_SYSTEM;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.ArgumentMatchers.isNull;
++import static org.mockito.Mockito.doAnswer;
++import static org.mockito.Mockito.doThrow;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.testng.Assert.assertThrows;
++import static org.mockito.Mockito.when;
++
++import android.os.Handler;
++import android.os.test.TestLooper;
++
++import androidx.test.filters.SmallTest;
++import androidx.test.runner.AndroidJUnit4;
++
++import com.android.internal.widget.LockscreenCredential;
++
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++
++import java.util.concurrent.atomic.AtomicReference;
++
++/** atest FrameworksServicesTests:DuressPasswordHelperTest */
++@SmallTest
++@RunWith(AndroidJUnit4.class)
++public class DuressPasswordHelperTest {
++    private static final String STORAGE_KEY = DuressCredentials.LOCK_SETTINGS_STORAGE_KEY;
++
++    private final AtomicReference<String> mRecord = new AtomicReference<>();
++    private final LockSettingsStorage mStorage = mock(LockSettingsStorage.class);
++    private final SyntheticPasswordManager mSpManager =
++            new SyntheticPasswordManager(null, mStorage, null, null, null);
++    private final TestLooper mLooper = new TestLooper();
++    private final Runnable mWipe = mock(Runnable.class);
++    private final DuressPasswordHelper mHelper =
++            new DuressPasswordHelper(mStorage, mSpManager, new Handler(mLooper.getLooper()), mWipe);
++
++    @Before
++    public void setUp() {
++        when(mStorage.getString(eq(STORAGE_KEY), isNull(), eq(USER_SYSTEM)))
++                .thenAnswer(invocation -> mRecord.get());
++        doAnswer(invocation -> {
++            mRecord.set(invocation.getArgument(1));
++            return null;
++        }).when(mStorage).setString(eq(STORAGE_KEY), anyString(), eq(USER_SYSTEM));
++        doAnswer(invocation -> {
++            mRecord.set(null);
++            return null;
++        }).when(mStorage).removeKey(STORAGE_KEY, USER_SYSTEM);
++    }
++
++    @Test
++    public void rejectedNonMatchesDoNotWipe() {
++        enroll();
++        tryRejected(LockscreenCredential.createPin("8429"));
++        tryRejected(LockscreenCredential.createPassword("2591")); // PIN bytes, password type
++        tryRejected(LockscreenCredential.createPassword("wrong-password"));
++        mLooper.dispatchAll();
++        verify(mWipe, never()).run();
++    }
++
++    @Test
++    public void rejectedPinMatchWipesOnceAfterCallerZeroizesOriginal() {
++        enroll();
++        tryRejected(LockscreenCredential.createPin("2591"));
++        tryRejected(LockscreenCredential.createPin("2591"));
++        mLooper.dispatchAll();
++        verify(mWipe).run();
++    }
++
++    @Test
++    public void rejectedPasswordMatchWipes() {
++        enroll();
++        tryRejected(LockscreenCredential.createPassword("test-duress-password"));
++        mLooper.dispatchAll();
++        verify(mWipe).run();
++    }
++
++    @Test
++    public void deletionCancelsQueuedMatch() {
++        enroll();
++        tryRejected(LockscreenCredential.createPin("2591"));
++        try (var none = LockscreenCredential.createNone()) {
++            synchronized (mSpManager) {
++                mHelper.setDuressCredentials(none, none);
++                assertFalse(mHelper.hasDuressCredentials());
++            }
++        }
++        assertNull(mRecord.get());
++        tryRejected(LockscreenCredential.createPassword("test-duress-password"));
++        mLooper.dispatchAll();
++        verify(mWipe, never()).run();
++    }
++
++    @Test
++    public void credentialChangeCancelsQueuedMatch() {
++        enroll();
++        try (var pin = LockscreenCredential.createPin("2591")) {
++            synchronized (mSpManager) {
++                mHelper.onCredentialRejected(pin, () -> false);
++            }
++        }
++        mLooper.dispatchAll();
++        verify(mWipe, never()).run();
++    }
++
++    @Test
++    public void invalidEnrollmentLeavesExistingRecordIntact() {
++        enroll();
++        String before = mRecord.get();
++        try (var tooShort = LockscreenCredential.createPin("19");
++                var wrongType = LockscreenCredential.createPassword("2591");
++                var password = LockscreenCredential.createPassword("test-duress-password");
++                var none = LockscreenCredential.createNone()) {
++            synchronized (mSpManager) {
++                assertThrows(IllegalArgumentException.class,
++                        () -> mHelper.setDuressCredentials(tooShort, password));
++                assertThrows(IllegalArgumentException.class,
++                        () -> mHelper.setDuressCredentials(wrongType, password));
++                assertThrows(IllegalArgumentException.class,
++                        () -> mHelper.setDuressCredentials(none, password));
++            }
++        }
++        assertEquals(before, mRecord.get());
++    }
++
++    @Test
++    public void wipeDeletesSecretsBeforeShutdown() {
++        Runnable delete = mock(Runnable.class);
++        Runnable shutdown = mock(Runnable.class);
++        DuressWipe.run(delete, shutdown);
++        var order = inOrder(delete, shutdown);
++        order.verify(delete).run();
++        order.verify(shutdown).run();
++    }
++
++    @Test
++    public void wipeShutsDownIfSecretDeletionThrows() {
++        Runnable delete = mock(Runnable.class);
++        Runnable shutdown = mock(Runnable.class);
++        doThrow(new IllegalStateException()).when(delete).run();
++        assertThrows(IllegalStateException.class, () -> DuressWipe.run(delete, shutdown));
++        verify(shutdown).run();
++    }
++
++    private void enroll() {
++        try (var pin = LockscreenCredential.createPin("2591");
++                var password = LockscreenCredential.createPassword("test-duress-password")) {
++            synchronized (mSpManager) {
++                mHelper.setDuressCredentials(pin, password);
++                assertTrue(mHelper.hasDuressCredentials());
++            }
++        }
++    }
++
++    private void tryRejected(LockscreenCredential credential) {
++        try (credential) {
++            synchronized (mSpManager) {
++                mHelper.onCredentialRejected(credential, () -> true);
++            }
++        }
++    }
++}
+diff --git a/services/tests/servicestests/src/com/android/server/locksettings/LockSettingsServiceTests.java b/services/tests/servicestests/src/com/android/server/locksettings/LockSettingsServiceTests.java
+index cffe6152..def93952 100644
+--- a/services/tests/servicestests/src/com/android/server/locksettings/LockSettingsServiceTests.java
++++ b/services/tests/servicestests/src/com/android/server/locksettings/LockSettingsServiceTests.java
+@@ -45,6 +45,7 @@ import static org.mockito.Mockito.reset;
+ import static org.mockito.Mockito.times;
+ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
++import static org.testng.Assert.assertThrows;
+ 
+ import android.content.Intent;
+ import android.hardware.weaver.WeaverReadStatus;
+@@ -106,6 +107,78 @@ public class LockSettingsServiceTests extends BaseLockSettingsServiceTests {
+         mService.initializeSyntheticPassword(MANAGED_PROFILE_USER_ID);
+     }
+ 
++    @Test
++    public void duressIsCheckedOnlyAfterWeaverRejectsCredential() throws Exception {
++        mSpManager.enableWeaver();
++        try (var real = newPin("5962"); var candidate = newPin("2591")) {
++            setCredential(PRIMARY_USER_ID, real);
++            assertTrue(mService.checkCredential(real, PRIMARY_USER_ID, null).isMatched());
++            verify(mInjector.mDuressPasswordHelper, never()).onCredentialRejected(any(), any());
++
++            mSpManager.injectWeaverReadResponse(WeaverReadStatus.INCORRECT_KEY, Duration.ZERO);
++            assertFalse(mService.verifyCredential(candidate, PRIMARY_USER_ID, 0).isMatched());
++            verify(mInjector.mDuressPasswordHelper).onCredentialRejected(eq(candidate), any());
++        }
++    }
++
++    @Test
++    public void duressIsCheckedAfterGatekeeperRejectsCredential() throws Exception {
++        try (var real = newPassword("normal-screen-lock");
++                var candidate = newPassword("test-duress-password")) {
++            setCredential(PRIMARY_USER_ID, real);
++            assertTrue(mService.verifyCredential(real, PRIMARY_USER_ID, 0).isMatched());
++            verify(mInjector.mDuressPasswordHelper, never()).onCredentialRejected(any(), any());
++
++            assertFalse(mService.checkCredential(candidate, PRIMARY_USER_ID, null).isMatched());
++            verify(mInjector.mDuressPasswordHelper).onCredentialRejected(eq(candidate), any());
++        }
++    }
++
++    @Test
++    public void duressIsSkippedWhenWeaverThrottlesOrErrors() throws Exception {
++        mSpManager.enableWeaver();
++        try (var real = newPin("5962"); var candidate = newPin("2591")) {
++            setCredential(PRIMARY_USER_ID, real);
++            mSpManager.injectWeaverReadResponse(WeaverReadStatus.FAILED, Duration.ZERO);
++            assertTrue(mService.verifyCredential(candidate, PRIMARY_USER_ID, 0).isOtherError());
++            mSpManager.injectWeaverReadResponse(
++                    WeaverReadStatus.THROTTLE, Duration.ofSeconds(60));
++            assertTrue(mService.checkCredential(real, PRIMARY_USER_ID, null).hasTimeout());
++            verify(mInjector.mDuressPasswordHelper, never()).onCredentialRejected(any(), any());
++        }
++    }
++
++    @Test
++    public void duressManagementRequiresRealOwnerCredential() throws Exception {
++        mSpManager.enableWeaver();
++        try (var real = newPin("5962"); var candidate = newPin("2591");
++                var password = newPassword("test-duress-password"); var none = nonePassword()) {
++            setCredential(PRIMARY_USER_ID, real);
++            assertThrows(SecurityException.class,
++                    () -> mService.setDuressCredentials(none, candidate, password));
++            assertThrows(SecurityException.class,
++                    () -> mService.setDuressCredentials(candidate, none, none));
++            assertThrows(SecurityException.class, () -> mService.hasDuressCredentials(candidate));
++            verify(mInjector.mDuressPasswordHelper, never()).onCredentialRejected(any(), any());
++            verify(mInjector.mDuressPasswordHelper, never()).setDuressCredentials(any(), any());
++            verify(mInjector.mDuressPasswordHelper, never()).hasDuressCredentials();
++
++            mService.setDuressCredentials(real, candidate, password);
++            mService.setDuressCredentials(real, none, none);
++            verify(mInjector.mDuressPasswordHelper).setDuressCredentials(candidate, password);
++            verify(mInjector.mDuressPasswordHelper).setDuressCredentials(none, none);
++        }
++    }
++
++    @Test
++    public void duressStorageCannotBeAccessedThroughGenericBinderMethods() {
++        String key = DuressCredentials.LOCK_SETTINGS_STORAGE_KEY;
++        assertThrows(SecurityException.class, () -> mService.getString(key, null, PRIMARY_USER_ID));
++        assertThrows(SecurityException.class, () -> mService.setString(key, null, PRIMARY_USER_ID));
++        assertThrows(SecurityException.class, () -> mService.setBoolean(key, false, PRIMARY_USER_ID));
++        assertThrows(SecurityException.class, () -> mService.setLong(key, 0, PRIMARY_USER_ID));
++    }
++
+     @Test
+     @EnableFlags({
+         android.security.Flags.FLAG_APP_LOCK_APIS,
