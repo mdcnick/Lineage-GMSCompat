@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+    <project name="LineageOS/android_device_oneplus_lemonadep" path="device/oneplus/lemonadep" revision="8a129d327148b573543c9032628e23eb212c1950" upstream="refs/heads/lineage-24.0" />
+    <project name="LineageOS/android_device_oneplus_sm8350-common" path="device/oneplus/sm8350-common" revision="34661bff0fe0d9ce4463c71f6d3b80f0b04b80d5" upstream="refs/heads/lineage-24.0" />
+    <project name="LineageOS/android_hardware_oneplus" path="hardware/oneplus" revision="37f806c3edbe5e5ff099958b30cab6a3c33db35d" upstream="refs/heads/lineage-24.0" />
+    <project name="LineageOS/android_hardware_oplus" path="hardware/oplus" revision="07bf053fac337aae79c1d0c9931cf854ae8971b9" upstream="refs/heads/lineage-24.0" />
+    <project name="LineageOS/android_hardware_pixelworks_interfaces" path="hardware/pixelworks/interfaces" revision="80fa86ece0ab820b02ff059bc1c1b1f9e5f219a3" upstream="refs/heads/lineage-24.0" />
+    <project name="LineageOS/android_kernel_oneplus_sm8350" path="kernel/oneplus/sm8350" revision="c156e7c9a5149ba1d6007c4fabc4584afc49cf78" upstream="refs/heads/lineage-24.0" />
+</manifest>
